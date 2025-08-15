@@ -2,8 +2,8 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "server.js",  ⬅️ Updated to match your main file
-  "type": "module",  ⬅️ Added to enable ES Module syntax
+  "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
