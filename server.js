@@ -1,9 +1,11 @@
+// server.js
 import express from 'express';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 // Import all routes - MAKE SURE whatsappRoutes is imported
@@ -12,13 +14,26 @@ import attendanceRoutes from './routes/attendanceRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';  // This line is crucial!
 
-// Load environment variables
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+// ------------------ Configurable upload base ------------------
+// Prefer explicit UPLOAD_DIR env var. Otherwise, if running on Vercel (serverless),
+// use os.tmpdir() since /var/task is read-only. For local dev, use a folder inside project.
+const isServerless = !!process.env.VERCEL; // Vercel sets this to "1" or "true"
+const uploadBaseEnv = process.env.UPLOAD_DIR; // optional override
+const defaultLocalUploads = path.join(__dirname, 'uploads');
+
+const uploadBase = uploadBaseEnv
+  ? path.resolve(uploadBaseEnv)
+  : (isServerless ? path.join(os.tmpdir(), 'gym_uploads') : defaultLocalUploads);
+
+console.log('ℹ️ Running in serverless mode:', isServerless);
+console.log('ℹ️ Upload base directory:', uploadBase);
 
 // ------------------ Middleware ------------------
 app.use(cors({
@@ -37,23 +52,42 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Serve static files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ------------------ Ensure directories exist (safe) ------------------
+const requiredDirs = ['uploads', 'whatsapp-auth', 'logs'];
+requiredDirs.forEach(dir => {
+  // For each, create under uploadBase for serverless; local dev will create under project uploads folder
+  const dirPath = isServerless
+    ? path.join(uploadBase, dir)
+    : path.join(__dirname, dir);
+
+  try {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+      console.log(`✅ Created directory: ${dirPath}`);
+    } else {
+      console.log(`ℹ️ Directory exists: ${dirPath}`);
+    }
+  } catch (err) {
+    // If directory creation fails, log a clear message but don't crash the whole server
+    console.warn(`⚠️ Could not create directory ${dirPath}. Reason:`, err && err.message ? err.message : err);
+    // On serverless, we try best-effort; if you need persistent write, configure UPLOAD_DIR or external storage
+  }
+});
+
+// Serve static files from the correct path (only if directory exists or is writable)
+const staticUploadsPath = isServerless ? path.join(uploadBase, 'uploads') : path.join(__dirname, 'uploads');
+try {
+  // Protect against trying to serve a non-existent folder (express will still mount but files won't exist)
+  app.use('/uploads', express.static(staticUploadsPath));
+  console.log('✅ Static uploads served from:', staticUploadsPath);
+} catch (err) {
+  console.warn('⚠️ Failed to serve static uploads:', err && err.message ? err.message : err);
+}
 
 // Request logging
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
   next();
-});
-
-// ------------------ Create directories ------------------
-const requiredDirs = ['uploads', 'whatsapp-auth', 'logs'];
-requiredDirs.forEach(dir => {
-  const dirPath = path.join(__dirname, dir);
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-    console.log(`✅ Created directory: ${dir}`);
-  }
 });
 
 // ------------------ Routes Registration ------------------
@@ -81,6 +115,10 @@ app.get('/health', (req, res) => {
     status: 'OK',
     message: 'Server is running',
     timestamp: new Date().toISOString(),
+    env: {
+      isServerless,
+      uploadBase
+    },
     routes: {
       whatsapp: '/api/whatsapp',
       customers: '/api/customers',
@@ -124,9 +162,9 @@ app.use((req, res, next) => {
 
 app.use((error, req, res, next) => {
   console.error('❌ Global error:', error);
-  res.status(error.status || 500).json({
+  res.status(error?.status || 500).json({
     success: false,
-    message: error.message || 'Internal server error',
+    message: error?.message || 'Internal server error',
     timestamp: new Date().toISOString()
   });
 });
@@ -134,7 +172,8 @@ app.use((error, req, res, next) => {
 // ------------------ Database Connection ------------------
 const connectDatabase = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/gym_management', {
+    const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/gym_management';
+    await mongoose.connect(mongoUri, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
@@ -160,6 +199,10 @@ const startServer = async () => {
       console.log(`📱 WhatsApp API: http://localhost:${PORT}/api/whatsapp`);
       console.log(`🔍 Health Check: http://localhost:${PORT}/health`);
       console.log(`🧪 Test WhatsApp: http://localhost:${PORT}/test-whatsapp`);
+      console.log('ℹ️ Upload base:', uploadBase);
+      if (isServerless) {
+        console.log('⚠️ Running serverless: uploads are ephemeral in /tmp. Consider external storage.');
+      }
     });
     
   } catch (error) {
