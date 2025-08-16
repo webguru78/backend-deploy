@@ -46,15 +46,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ------------------ Create directories ------------------
-const requiredDirs = ['uploads', 'whatsapp-auth', 'logs'];
-requiredDirs.forEach(dir => {
-  const dirPath = path.join(__dirname, dir);
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-    console.log(`✅ Created directory: ${dir}`);
-  }
-});
+
 
 // ------------------ Routes Registration ------------------
 console.log('🛣️ Registering routes...');
