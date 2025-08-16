@@ -1,17 +1,16 @@
-// server.js
 import express from 'express';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
-// The fs and os imports are no longer needed since we are removing all file system operations.
 
-// Import all routes
+// Import all routes - MAKE SURE whatsappRoutes is imported
 import customerRoutes from './routes/customerRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
-import whatsappRoutes from './routes/whatsappRoutes.js';
+import whatsappRoutes from './routes/whatsappRoutes.js';  // This line is crucial!
 
 // Load environment variables
 dotenv.config();
@@ -38,9 +37,8 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// ------------------ File System Operations Removed ------------------
-// All code related to fs.mkdirSync and serving static files from the local file system
-// has been removed. On Vercel, use a cloud service (e.g., AWS S3) for persistent storage.
+// Serve static files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Request logging
 app.use((req, res, next) => {
@@ -48,19 +46,20 @@ app.use((req, res, next) => {
   next();
 });
 
+// ------------------ Create directories ------------------
+const requiredDirs = ['uploads', 'whatsapp-auth', 'logs'];
+requiredDirs.forEach(dir => {
+  const dirPath = path.join(__dirname, dir);
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+    console.log(`✅ Created directory: ${dir}`);
+  }
+});
+
 // ------------------ Routes Registration ------------------
 console.log('🛣️ Registering routes...');
 
-// Register a basic route for the root URL
-app.get('/', (req, res) => {
-  res.json({
-    status: 'OK',
-    message: 'Welcome to the backend API!',
-    availableRoutes: ['/health', '/api/customers', '/api/whatsapp']
-  });
-});
-
-// Register WhatsApp routes
+// Register WhatsApp routes FIRST (most important)
 app.use('/api/whatsapp', whatsappRoutes);
 console.log('✅ WhatsApp routes registered at /api/whatsapp');
 
@@ -81,61 +80,94 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
     message: 'Server is running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    routes: {
+      whatsapp: '/api/whatsapp',
+      customers: '/api/customers',
+      attendance: '/api/attendance',
+      reports: '/api/reports'
+    }
+  });
+});
+
+// Test WhatsApp route specifically
+app.get('/test-whatsapp', (req, res) => {
+  res.json({
+    message: 'WhatsApp route is working',
+    availableEndpoints: [
+      'GET /api/whatsapp/status',
+      'POST /api/whatsapp/init-whatsapp-web',
+      'POST /api/whatsapp/request-whatsapp-verification',
+      'POST /api/whatsapp/verify-whatsapp-code',
+      'POST /api/whatsapp/send-message',
+      'POST /api/whatsapp/disconnect'
+    ]
   });
 });
 
 // ------------------ Error Handling ------------------
-app.use((req, res) => {
+app.use((req, res, next) => {
+  console.log(`❌ 404 - Route not found: ${req.method} ${req.url}`);
   res.status(404).json({
     success: false,
-    message: `Route ${req.method} ${req.url} not found`
+    message: `Route ${req.method} ${req.url} not found`,
+    availableRoutes: [
+      '/health',
+      '/test-whatsapp', 
+      '/api/whatsapp/status',
+      '/api/customers',
+      '/api/attendance',
+      '/api/reports'
+    ]
   });
 });
 
-app.use((error, req, res) => {
+app.use((error, req, res, next) => {
   console.error('❌ Global error:', error);
-  res.status(error?.status || 500).json({
+  res.status(error.status || 500).json({
     success: false,
-    message: error?.message || 'Internal server error',
+    message: error.message || 'Internal server error',
     timestamp: new Date().toISOString()
   });
 });
 
-// ------------------ Database Connection (Serverless-friendly) ------------------
-// Use a connection flag to ensure mongoose.connect is only called once per instance.
-let isConnected = false;
-
-async function connectToDatabase() {
-  if (isConnected) {
-    return;
-  }
+// ------------------ Database Connection ------------------
+const connectDatabase = async () => {
   try {
-    const mongoUri = process.env.MONGO_URI;
-    if (!mongoUri) {
-      throw new Error("MONGO_URI environment variable is not set.");
-    }
-    await mongoose.connect(mongoUri);
-    isConnected = true;
+    await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/gym_management', {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
     console.log("✅ MongoDB Connected");
+    return true;
   } catch (error) {
     console.error("❌ MongoDB Connection Error:", error);
     throw error;
   }
-}
+};
 
-// Vercel serverless function entry point
-// Connect to the database before handling the request
-app.use(async (req, res, next) => {
+// ------------------ Start Server ------------------
+const startServer = async () => {
   try {
-    await connectToDatabase();
-    next();
+    // Connect to database first
+    await connectDatabase();
+    
+    // Start server
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🌐 API Base URL: http://localhost:${PORT}`);
+      console.log(`📱 WhatsApp API: http://localhost:${PORT}/api/whatsapp`);
+      console.log(`🔍 Health Check: http://localhost:${PORT}/health`);
+      console.log(`🧪 Test WhatsApp: http://localhost:${PORT}/test-whatsapp`);
+    });
+    
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Database connection failed' });
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
   }
-});
+};
 
-// ------------------ Server start code removed ------------------
-// The `startServer()` and `app.listen()` calls are removed. Vercel handles this.
+startServer();
 
 export default app;
