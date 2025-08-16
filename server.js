@@ -1,3 +1,4 @@
+// server.js (replace your file with this)
 import express from 'express';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
@@ -6,13 +7,12 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
-// Import all routes - MAKE SURE whatsappRoutes is imported
+// Import all routes
 import customerRoutes from './routes/customerRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
 
-// Load environment variables
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,7 +20,15 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// ------------------ Middleware ------------------
+// Robust production / Vercel detection
+const isProduction = process.env.NODE_ENV === 'production'
+  || process.env.VERCEL === '1'
+  || process.env.VERCEL === 'true';
+
+// uploads directory (use /tmp in production/VERCEL)
+const uploadsDir = isProduction ? '/tmp/uploads' : path.join(__dirname, 'uploads');
+
+// CORS - you can expand origins as needed; keep it minimal in production
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -37,11 +45,7 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// For Vercel deployment, use /tmp for file operations
-const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL;
-const uploadsDir = isProduction ? '/tmp/uploads' : path.join(__dirname, 'uploads');
-
-// Serve static files (only works locally, not on Vercel)
+// Serve static uploads only in non-production (Vercel has read-only filesystem)
 if (!isProduction) {
   app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 }
@@ -52,12 +56,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// ------------------ Create directories (only for development or in /tmp) ------------------
+// Create directories (safe: won't throw if read-only)
 const createDirectories = () => {
   try {
     const baseDir = isProduction ? '/tmp' : __dirname;
     const requiredDirs = ['uploads', 'whatsapp-auth', 'logs'];
-    
+
     requiredDirs.forEach(dir => {
       const dirPath = path.join(baseDir, dir);
       if (!fs.existsSync(dirPath)) {
@@ -67,41 +71,52 @@ const createDirectories = () => {
     });
   } catch (error) {
     console.warn(`⚠️ Could not create directories: ${error.message}`);
-    // Don't fail the application if directories can't be created
   }
 };
 
-// Only create directories if not in a read-only environment
 createDirectories();
 
-// ------------------ Routes Registration ------------------
+// ------------------ Register routes ------------------
 console.log('🛣️ Registering routes...');
-
-// Register WhatsApp routes FIRST (most important)
 app.use('/api/whatsapp', whatsappRoutes);
-console.log('✅ WhatsApp routes registered at /api/whatsapp');
-
-// Register other routes
 app.use('/api/customers', customerRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/reports', reportRoutes);
-
-// Legacy routes for backward compatibility
+// legacy mounts (if you intentionally want them)
 app.use('/api', customerRoutes);
 app.use('/api', attendanceRoutes);
 app.use('/api', reportRoutes);
-
 console.log('✅ All routes registered');
 
-// ------------------ Health Check ------------------
+// ------------------ Root + Health ------------------
+// Root: useful on Vercel when user visits the base URL
+app.get('/', (req, res) => {
+  // respond with a friendly summary; client/browser visiting root gets redirected info
+  return res.json({
+    success: true,
+    message: 'Welcome — API is up. See /health for details.',
+    health: '/health',
+    availableRoutes: [
+      '/',
+      '/health',
+      '/test-whatsapp',
+      '/api/whatsapp/status',
+      '/api/customers',
+      '/api/attendance',
+      '/api/reports'
+    ]
+  });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: isProduction ? 'production' : 'development',
-    uploadsDir: uploadsDir,
+    uploadsDir,
     routes: {
+      root: '/',
       whatsapp: '/api/whatsapp',
       customers: '/api/customers',
       attendance: '/api/attendance',
@@ -110,7 +125,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Test WhatsApp route specifically
 app.get('/test-whatsapp', (req, res) => {
   res.json({
     message: 'WhatsApp route is working',
@@ -125,15 +139,16 @@ app.get('/test-whatsapp', (req, res) => {
   });
 });
 
-// ------------------ Error Handling ------------------
+// ------------------ 404 + error handlers ------------------
 app.use((req, res, next) => {
   console.log(`❌ 404 - Route not found: ${req.method} ${req.url}`);
   res.status(404).json({
     success: false,
     message: `Route ${req.method} ${req.url} not found`,
     availableRoutes: [
+      '/',
       '/health',
-      '/test-whatsapp', 
+      '/test-whatsapp',
       '/api/whatsapp/status',
       '/api/customers',
       '/api/attendance',
@@ -151,7 +166,7 @@ app.use((error, req, res, next) => {
   });
 });
 
-// ------------------ Database Connection ------------------
+// ------------------ Database connection ------------------
 const connectDatabase = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/gym_management', {
@@ -166,13 +181,11 @@ const connectDatabase = async () => {
   }
 };
 
-// ------------------ Start Server (for local development) ------------------
+// ------------------ Start server locally only ------------------
 const startServer = async () => {
   try {
-    // Connect to database first
     await connectDatabase();
-    
-    // Start server (only in development)
+
     if (!isProduction) {
       const PORT = process.env.PORT || 5000;
       app.listen(PORT, () => {
@@ -183,20 +196,16 @@ const startServer = async () => {
         console.log(`🧪 Test WhatsApp: http://localhost:${PORT}/test-whatsapp`);
       });
     }
-    
   } catch (error) {
     console.error('❌ Failed to start server:', error);
-    if (!isProduction) {
-      process.exit(1);
-    }
+    if (!isProduction) process.exit(1);
   }
 };
 
-// Initialize the application
 if (!isProduction) {
   startServer();
 } else {
-  // For Vercel, just connect to database
+  // On Vercel we just connect DB and let the serverless function handle requests
   connectDatabase().catch(console.error);
 }
 
